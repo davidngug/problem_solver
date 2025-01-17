@@ -4,6 +4,7 @@ from dotenv import load_dotenv  # Import dotenv to load environment variables
 import os  # Import os to access environment variables
 import jwt  # Import JWT for token generation and decoding
 import datetime  # Import datetime for token expiration
+import bcrypt  # Import bcrypt for secure password hashing
 
 # Load environment variables from the .env file
 load_dotenv()
@@ -47,38 +48,52 @@ def token_required(f):
     return decorator
 
 
-# Register a new user
+# Register a new user (with password hashing)
 @app.route('/register', methods=['POST'])
 def register():
     data = request.json
     email = data.get('email')
     password = data.get('password')
 
+    if not email or not password:
+        return jsonify({"error": "Email and password are required!"}), 400
+
+    # Hash the password
+    hashed_password = bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt())
+
     # Add user to Firestore
     users_ref.document(email).set({
         "email": email,
-        "password": password  # Use hashed passwords in production
+        "password": hashed_password.decode('utf-8')  # Store as string
     })
     return jsonify({"message": "User registered successfully!"}), 201
 
 
-# Login a user and return a JWT token
+# Login a user and return a JWT token (with hashed password check)
 @app.route('/login', methods=['POST'])
 def login():
     data = request.json
     email = data.get('email')
     password = data.get('password')
 
+    if not email or not password:
+        return jsonify({"error": "Email and password are required!"}), 400
+
     # Check user credentials
     user = users_ref.document(email).get()
-    if user.exists and user.to_dict().get('password') == password:
-        # Generate JWT token
-        token = jwt.encode({
-            'email': email,
-            'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # 1-hour expiration
-        }, app.config['SECRET_KEY'], algorithm="HS256")
+    if user.exists:
+        user_data = user.to_dict()
+        stored_password = user_data.get('password')
 
-        return jsonify({'message': 'Login successful!', 'token': token}), 200
+        # Verify hashed password
+        if bcrypt.checkpw(password.encode('utf-8'), stored_password.encode('utf-8')):
+            # Generate JWT token
+            token = jwt.encode({
+                'email': email,
+                'exp': datetime.datetime.utcnow() + datetime.timedelta(hours=1)  # 1-hour expiration
+            }, app.config['SECRET_KEY'], algorithm="HS256")
+
+            return jsonify({'message': 'Login successful!', 'token': token}), 200
 
     return jsonify({"error": "Invalid credentials!"}), 401
 
